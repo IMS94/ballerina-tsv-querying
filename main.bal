@@ -1,61 +1,26 @@
 import ballerina/io;
 import ballerina/regex;
-import ballerina/log;
 
-type Title record {
-    string showId;
-    string category;
-    string title;
-    string director;
-    string[] cast;
-    string country;
-};
-
-type Name record {
-    string id;
-    string name;
-    string birthYear;
-    string[] knownForTitles;
-};
-
-function searchByName(string query) returns Name[] {
-    stream<string, io:Error?>|io:Error namesStream = io:fileReadLinesAsStream("names.tsv");
-    if namesStream is stream<string, io:Error?> {
-        table<Name> key(id)|error? names = table key(id) from var line in namesStream
-            let string[] parts = regex:split(line, io:TAB)
-            where parts.length() == 6
-            let string id = parts[0],
-                string name = parts[1],
-                string birthYear = parts[2],
-                string[] knownForTitles = regex:split(parts[5], ",")
-            where name.includes(query)
-            limit 100000
-            select {
-                id,
-                name,
-                birthYear,
-                knownForTitles
-            };
-
-        if names is table<Name> key(id) {
-            log:printDebug("Duplicates: ", size = names.length());
-            return from var item in names
-                select item;
-        }
-    } else {
-        log:printError("Failed to read tsv");
-    }
-
-    return [];
-}
-
+# Represents an athlete
+#
+# + name - Name of the athlete  
+# + country - Country of the athlete 
+# + sport - Sport to which athlete participated  
 type Athlete record {
     string name;
     string country;
     string sport;
 };
 
-type Medals record {
+# Represents number of medals won by a country
+#
+# + rank - Rank by number of gold medals won 
+# + country - Name of the country
+# + gold - Number of gold medals
+# + silver - Number of silver medals
+# + bronze - Number of bronze medals
+# + totalMedals - Total number of medals won 
+type MedalStats record {
     int rank;
     string country;
     int gold;
@@ -64,48 +29,25 @@ type Medals record {
     int totalMedals;
 };
 
-function searchNetflix(string query) returns error? {
-    Athlete[] athletes;
-    stream<string, io:Error?>|io:Error athletesStream = io:fileReadLinesAsStream("archive/Athletes.csv");
-    if athletesStream is stream<string, error?> {
-        Athlete[]|error? names = from var line in athletesStream
-            let string[] parts = regex:split(line, io:TAB)
-            where parts.length() == 3
-            let string name = parts[0],
-                string country = parts[1],
-                string sport = parts[2]
-            select {
-                name,
-                country,
-                sport
-            };
+type CountryRatio record {
+    string country;
+    float ratio;
+};
 
-        if names is Athlete[] {
-            log:printInfo("Athletes size: ", size = names.length());
-            athletes = names;
-        } else {
-            log:printError("Failed to query", 'error = names);
-            return;
-        }
-    } else {
-        log:printError("Failed to read tsv", 'error = athletesStream);
-        return;
-    }
-
-    log:printInfo("Reading medals data");
-    Medals[] medals;
-    stream<string, io:Error?>|io:Error medalsStream = io:fileReadLinesAsStream("archive/Medals.csv");
-    if medalsStream is stream<string, io:Error?> {
-        Medals[]|error? names = from var line in medalsStream
-            let string[] parts = regex:split(line, io:TAB)
-            where parts.length() == 7
-            where int:fromString(parts[0]) is int
-            let int rank = check int:fromString(parts[0])
-            let string country = parts[1]
-            let int gold = check int:fromString(parts[2])
-            let int silver = check int:fromString(parts[3])
-            let int bronze = check int:fromString(parts[4])
-            let int totalMedals = check int:fromString(parts[5])
+# Get medals stats as a record stream
+# + return - Stream of MedalStats or an error  
+function getMedalStats() returns stream<MedalStats, error?>|error {
+    stream<string[], io:Error?>|error tsvStream = readTsvAsStream("data/Medals.tsv");
+    if tsvStream is stream<string[], io:Error?> {
+        return stream from var entry in tsvStream
+            where entry.length() == 7
+            where int:fromString(entry[0]) is int
+            let int rank = check int:fromString(entry[0]),
+                string country = entry[1],
+                int gold = check int:fromString(entry[2]),
+                int silver = check int:fromString(entry[3]),
+                int bronze = check int:fromString(entry[4]),
+                int totalMedals = check int:fromString(entry[5])
             select {
                 rank,
                 country,
@@ -114,107 +56,138 @@ function searchNetflix(string query) returns error? {
                 bronze,
                 totalMedals
             };
+    } else {
+        return error("Failed to read medals data", tsvStream);
+    }
+}
 
-        if names is Medals[] {
-            log:printInfo("Medals entry count: ", size = names.length());
-            medals = names;
-        } else {
-            log:printError("Failed to query", 'error = names);
-            return;
+# Get athletes stream from the TSV
+# + return - Stream of athlete records or an error 
+function getAthletes() returns stream<Athlete, error?>|error {
+    stream<string[], io:Error?>|error athletesStream = readTsvAsStream("data/Athletes.tsv");
+    if athletesStream is stream<string[], io:Error?> {
+        return stream from var entry in athletesStream
+            where entry.length() == 3
+            where entry[0] != "Name"
+            let string name = entry[0],
+                string country = entry[1],
+                string sport = entry[2]
+            select {
+                name,
+                country,
+                sport
+            };
+    } else {
+        return error("Unable to read athletes", athletesStream);
+    }
+}
+
+# Finds and prints the top 10 gold medal winning countries in Olympics 2020
+# + return - An error if any error occurs during processing.
+function findTop10MedalWinners() returns error? {
+    string[]|error? countries = from var stats in check getMedalStats()
+        order by stats.gold descending
+        limit 10
+        select stats.country;
+
+    if countries is string[] {
+        io:println("Top 10 winners: ");
+        foreach var country in countries {
+            io:println("\t" + country);
         }
     } else {
-        log:printError("Failed to read tsv", 'error = medalsStream);
-        return;
+        io:println("Failed to query top medal winners", countries);
     }
+}
 
-    map<int> athletesByCountry = {};
-    error? err = from var athlete in athletes
+# Return a map of number of athletes against country
+# + return - Map of number of athletes against country
+function findNumOfAthletesByCountry() returns map<int>|error {
+    map<int> countByCountry = {};
+    check from var athlete in check getAthletes()
         do {
-            int? count = athletesByCountry[athlete.country];
-            athletesByCountry[athlete.country] = count is int ? (count + 1) : 1;
+            countByCountry[athlete.country] = (countByCountry.hasKey(athlete.country) ? countByCountry.get(athlete.country) : 0) + 1;
+        };
+    return countByCountry;
+}
+
+# Find top 10 countries by number of athletes participated
+# + return - Error if any error occurs
+function findTop10CountriesByAthletes() returns error? {
+    map<int> athletesByCountry = check findNumOfAthletesByCountry();
+    string[] top10Countries = from [string, int] entry in athletesByCountry.entries()
+        order by entry[1] descending
+        limit 10
+        select entry[0];
+
+    io:println("Top 10 countries by number of Athletes: ");
+    foreach var country in top10Countries {
+        io:println("\t", country);
+    }
+}
+
+# Find countries with best gold medals won/number of athletes participated ratio
+# + return - Error if any occurs
+function findTop10GoldMedalsToAthletesRatio() returns error? {
+    map<int> athletesByCountry = check findNumOfAthletesByCountry();
+    stream<MedalStats, error?> medalStats = check getMedalStats();
+
+    CountryRatio[] ratios = from [string, int] athletesCount in athletesByCountry.entries()
+        join var stats in medalStats on athletesCount[0] equals stats.country
+        let float ratio = (<float>stats.gold / <float>athletesCount[1]) * 100
+        order by ratio descending
+        limit 10
+        select {
+            country: athletesCount[0],
+            ratio
         };
 
-    if err is error {
-        log:printError("Unable to calculate athletes by country", err);
-        return;
+    io:println("Top 10 countries with gold medals/athletes ratio");
+    foreach var ratio in ratios {
+        io:println("\t", ratio.country, "\t", float:round(ratio.ratio), "%");
     }
+}
 
-    err = from var country in athletesByCountry.keys()
-        let int count = athletesByCountry.get(country)
-        order by count descending
-        do {
-            io:println(country, "\t", count);
+# Find countries with best any medal won/number of athletes participated ratio
+# + return - Error if any occur
+function findTop10AnyMedalToAthletesRatio() returns error? {
+    map<int> athletesByCountry = check findNumOfAthletesByCountry();
+    stream<MedalStats, error?> medalStats = check getMedalStats();
+
+    CountryRatio[] ratios = from [string, int] athletesCount in athletesByCountry.entries()
+        join var stats in medalStats on athletesCount[0] equals stats.country
+        let float ratio = (<float>stats.totalMedals / <float>athletesCount[1]) * 100
+        order by ratio descending
+        limit 10
+        select {
+            country: athletesCount[0],
+            ratio
         };
 
-    if err is error {
-        log:printError("Unable to calculate athletes by country", err);
-        return;
+    io:println("Top 10 countries with any medals/athletes ratio");
+    foreach var ratio in ratios {
+        io:println("\t", ratio.country, "\t", float:round(ratio.ratio), "%");
     }
+}
 
-    map<int> medalsByCountry = {};
-    err = from var medal in medals
-        do {
-            medalsByCountry[medal.country] = medal.totalMedals;
-        };
-
-    if err is error {
-        log:printError("Unable to calculate medals by country", err);
-        return;
+# Given a tsv, this method returns a stream with each line as a string[]
+#
+# + filePath - Path to the tsv file
+# + return - Return the stream or an error if any error occurs while reading the file or parsing  
+function readTsvAsStream(string filePath) returns stream<string[], io:Error?>|error {
+    stream<string, io:Error?>|io:Error lineStream = io:fileReadLinesAsStream(filePath);
+    if lineStream is stream<string, io:Error?> {
+        return stream from var line in lineStream
+            let string[] parts = regex:split(line, io:TAB)
+            select parts;
+    } else {
+        return error("Unable to read tsv", 'error = lineStream);
     }
-
-    io:println("\n");
-    err = from var country in medalsByCountry.keys()
-        let int count = medalsByCountry.get(country)
-        order by count descending
-        do {
-            io:println(country, "\t", count);
-        };
-
-    if err is error {
-        log:printError("Unable to calculate medals by country", err);
-        return;
-    }
-
-    io:println("\nMedal ratios: ");
-    err = from var country in athletesByCountry.keys()
-        join var medalStats in medals on country equals medalStats.country
-        let decimal goldRatio = (<decimal>medalStats.gold / <decimal>athletesByCountry.get(country)) * 100
-        let decimal medalRatio = (<decimal>medalStats.totalMedals / <decimal>athletesByCountry.get(country)) * 100
-        order by medalRatio descending
-        do {
-            io:println(country, "\t", medalRatio, "%");
-        };
-
-    if err is error {
-        log:printError("Error calculating ratios", err);
-    }
-
-    // Athletes by event
-    map<int> athletesBySport = {};
-    err = from var athlete in athletes
-        do {
-            int? count = athletesBySport[athlete.sport];
-            athletesBySport[athlete.sport] = count is int ? (count + 1) : 1;
-        };
-
-    if err is error {
-        log:printError("Unable to calculate athletes by sport", err);
-        return;
-    }
-
-    io:println("\nAthletes by sport:");
-    err = from var sport in athletesBySport.keys()
-        let int count = athletesBySport.get(sport)
-        order by count descending
-        do {
-            io:println(sport, "\t", count);
-        };
 }
 
 public function main() {
-    log:printInfo("Running...");
-    error? err = searchNetflix("");
+    error? err = findTop10AnyMedalToAthletesRatio();
     if err is error {
-        log:printError("Failed", err);
+        io:println("Failed to execute query", err);
     }
 }
