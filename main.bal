@@ -186,7 +186,22 @@ function readTsvAsStream(string filePath) returns stream<string[], io:Error?>|er
 }
 
 public function main() {
-    error? err = findTop10AnyMedalToAthletesRatio();
+    error? err = findTop10MedalWinners();
+    if err is error {
+        io:println("Failed to execute query", err);
+    }
+
+    err = findTop10CountriesByAthletes();
+    if err is error {
+        io:println("Failed to execute query", err);
+    }
+
+    err = findTop10GoldMedalsToAthletesRatio();
+    if err is error {
+        io:println("Failed to execute query", err);
+    }
+
+    err = findTop10AnyMedalToAthletesRatio();
     if err is error {
         io:println("Failed to execute query", err);
     }
